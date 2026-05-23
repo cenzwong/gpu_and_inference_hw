@@ -1,0 +1,37 @@
+(.venv) cenzwong@Mac gpu_and_inference_hw % python mps/hw1/hw1_task.py 
+======================================================================
+HW1: GPU Roofline Model — Apple M2 GPU
+======================================================================
+
+Theoretical specs (FP32):
+  Peak compute:    4 TFLOP/s
+  Peak bandwidth:  0.10 TB/s
+  Ridge point:     36.0 FLOP/Byte
+
+Running benchmarks (first run compiles kernels via torch.compile)...
+  lowest-AI:  6.143 ms | BW: 0.09 TB/s
+    1 ops (   eager): 14.904 ms | AI: 0.0833 FLOP/B | 0.01 TFLOP/s
+    1 ops (compiled): 6.123 ms | AI: 0.25 FLOP/B | 0.02 TFLOP/s
+    2 ops (   eager): 33.609 ms | AI: 0.0833 FLOP/B | 0.01 TFLOP/s
+    2 ops (compiled): 6.132 ms | AI: 0.5 FLOP/B | 0.04 TFLOP/s
+    4 ops (   eager): 67.911 ms | AI: 0.0833 FLOP/B | 0.01 TFLOP/s
+    4 ops (compiled): 6.115 ms | AI: 1 FLOP/B | 0.09 TFLOP/s
+    8 ops (   eager): 137.824 ms | AI: 0.0833 FLOP/B | 0.01 TFLOP/s
+    8 ops (compiled): 6.140 ms | AI: 2 FLOP/B | 0.17 TFLOP/s
+   16 ops (   eager): 281.159 ms | AI: 0.0833 FLOP/B | 0.01 TFLOP/s
+   16 ops (compiled): 6.150 ms | AI: 4 FLOP/B | 0.35 TFLOP/s
+   32 ops (   eager): 561.957 ms | AI: 0.0833 FLOP/B | 0.01 TFLOP/s
+   32 ops (compiled): 6.108 ms | AI: 8 FLOP/B | 0.70 TFLOP/s
+   64 ops (   eager): 1127.380 ms | AI: 0.0833 FLOP/B | 0.01 TFLOP/s
+   64 ops (compiled): 6.141 ms | AI: 16 FLOP/B | 1.40 TFLOP/s
+  128 ops (   eager): 2249.428 ms | AI: 0.0833 FLOP/B | 0.01 TFLOP/s
+  128 ops (compiled): 19.830 ms | AI: 32 FLOP/B | 0.87 TFLOP/s
+  matmul 1024×1024: 1.592 ms | AI: 170.7 FLOP/B | 1.35 TFLOP/s
+  matmul 2048×2048: 11.335 ms | AI: 341.3 FLOP/B | 1.52 TFLOP/s
+  matmul 4096×4096: 75.945 ms | AI: 682.7 FLOP/B | 1.81 TFLOP/s
+
+Generating plots...
+
+Roofline plot saved to /Users/cenzwong/Projects/gpu_and_inference_hw/mps/hw1/results/roofline.png
+
+Done! Check the results/ directory for plots.

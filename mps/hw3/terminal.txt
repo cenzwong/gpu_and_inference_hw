@@ -1,0 +1,69 @@
+(.venv) cenzwong@Mac gpu_and_inference_hw % python mps/hw3/hw3_task.py 
+============================================================
+HW3: Mini Inference Engine
+============================================================
+
+────────────────────────────────────────────────────────────
+  Prefill-Heavy  (80 requests)
+
+no-cache: 697step [00:30, 22.99step/s, done=80/80 running=0 waiting=0]  
+
+  No prefix cache
+    Steps                    : 697
+    Throughput (tok/step)    : 10.58
+    TTFT mean / p95 (steps)  : 233.0 / 483.8
+    E2E latency mean (steps) : 360.6
+    Preemptions              : 91
+    Prefix cache hit rate    : 0.0%  (0 tokens saved)
+cache-on: 284step [00:14, 20.03step/s, done=80/80 running=0 waiting=0]  
+
+  Prefix cache ON
+    Steps                    : 284
+    Throughput (tok/step)    : 25.97
+    TTFT mean / p95 (steps)  : 48.1 / 99.2
+    E2E latency mean (steps) : 152.3
+    Preemptions              : 18
+    Prefix cache hit rate    : 50.1%  (11008 tokens saved)
+
+    Steps: 697 → 284  (2.45× fewer)
+    TTFT:  233.0 → 48.1 steps
+cache-on/decode-first: 409step [00:11, 34.54step/s, done=80/80 running=0 waiting=0]   
+
+  Scheduling policy (cache ON)
+    Prefill-first steps / TTFT / E2E : 284 / 48.1 / 152.3
+    Decode-first  steps / TTFT / E2E : 409 / 100.4 / 191.6
+
+────────────────────────────────────────────────────────────
+  Decode-Heavy  (50 requests)
+
+no-cache: 1511step [01:31, 16.58step/s, done=50/50 running=0 waiting=0] 
+
+  No prefix cache
+    Steps                    : 1511
+    Throughput (tok/step)    : 9.87
+    TTFT mean / p95 (steps)  : 737.7 / 1035.6
+    E2E latency mean (steps) : 1084.2
+    Preemptions              : 273
+    Prefix cache hit rate    : 0.0%  (0 tokens saved)
+cache-on: 1095step [01:06, 16.38step/s, done=50/50 running=0 waiting=0] 
+
+  Prefix cache ON
+    Steps                    : 1095
+    Throughput (tok/step)    : 13.62
+    TTFT mean / p95 (steps)  : 430.8 / 666.3
+    E2E latency mean (steps) : 773.1
+    Preemptions              : 159
+    Prefix cache hit rate    : 10.5%  (1920 tokens saved)
+
+    Steps: 1511 → 1095  (1.38× fewer)
+    TTFT:  737.7 → 430.8 steps
+cache-on/decode-first: 1105step [00:34, 31.73step/s, done=50/50 running=0 waiting=0] 
+
+  Scheduling policy (cache ON)
+    Prefill-first steps / TTFT / E2E : 1095 / 430.8 / 773.1
+    Decode-first  steps / TTFT / E2E : 1105 / 434.2 / 731.5
+
+────────────────────────────────────────────────────────────
+
+  Plot → /Users/cenzwong/Projects/gpu_and_inference_hw/mps/hw3/results/hw3_results.png
+  Policy plot → /Users/cenzwong/Projects/gpu_and_inference_hw/mps/hw3/results/hw3_policy_results.png

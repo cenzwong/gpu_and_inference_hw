@@ -11,12 +11,6 @@ from utils import (
 
 
 def optimized_loop(model, input_ids, n_steps):
-    """
-    Fast autoregressive generation loop.
-    Optimizations implemented:
-      - KV-caching to avoid O(N^2) recomputation.
-      - Elimination of per-step CPU-GPU synchronizations (no intermediate .item() or .cpu() calls).
-    """
     if n_steps <= 0:
         return []
 
@@ -44,50 +38,44 @@ def optimized_loop(model, input_ids, n_steps):
 
 
 def profile(loop_fn, model, input_ids, trace_name: str):
-    """
-    Profiles loop_fn using PyTorch Profiler.
-    Prints the summary table and exports a Chrome trace.
-    """
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     trace_path = RESULTS_DIR / trace_name
 
+    activities = [torch.profiler.ProfilerActivity.CPU]
+    if hasattr(torch.profiler.ProfilerActivity, "MPS"):
+        activities.append(torch.profiler.ProfilerActivity.MPS)
+
     with torch.profiler.profile(
-        activities=[
-            torch.profiler.ProfilerActivity.CPU,
-            torch.profiler.ProfilerActivity.CUDA,
-        ],
+        activities=activities,
         record_shapes=True,
         with_stack=True,
     ) as prof:
         loop_fn(model, input_ids, PROFILE_STEPS)
 
-    # Print summary sorted by CUDA time
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
+    # Print summary sorted by CPU or MPS execution time
+    sort_by = "mps_time_total" if hasattr(torch.profiler.ProfilerActivity, "MPS") else "cpu_time_total"
+    print(prof.key_averages().table(sort_by=sort_by, row_limit=15))
     prof.export_chrome_trace(str(trace_path))
 
 
 def generate_optimized(optimized_trace_name: str) -> float:
-    """
-    Loads the model in bfloat16, compiles it with torch.compile,
-    profiles the optimized loop, times the run, and returns the elapsed time.
-    """
-    # Enable TF32 for any remaining float32 operations
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-
-    # 1. Load the model in bfloat16 (huge speedup on L40S Tensor Cores)
-    model = build_model(torch.bfloat16)
+    # 1. Load the model in float16 (highly optimized on Apple Silicon GPU)
+    model = build_model(torch.float16)
 
     # Enable caching in the model configuration explicitly
     model.config.use_cache = True
 
-    # 2. Compile the model's forward path using JIT compiler to fuse kernels
+    # 2. Compile the model's forward path if supported.
     # Use dynamic=True because the sequence length of KV cache changes dynamically at each step.
-    model = torch.compile(model, dynamic=True)
+    try:
+        model = torch.compile(model, dynamic=True)
+    except Exception as e:
+        import warnings
+        warnings.warn(f"torch.compile failed or is not supported on MPS: {e}. Falling back to eager mode.")
 
     input_ids = get_input_ids()
 
-    # 3. Profile the optimized loop (also serves as warm-up for the JIT compiler)
+    # 3. Profile the optimized loop (serves as warm-up for the compile JIT too)
     profile(optimized_loop, model, input_ids, optimized_trace_name)
 
     # 4. Time the generation over MAX_NEW_TOKENS steps
@@ -108,7 +96,7 @@ def main():
     profile(slow_loop, model, input_ids, "v0_slow_trace.json")
     slow_elapsed = time_generation(slow_loop, model, input_ids, "Slow")
     del model
-    torch.cuda.empty_cache()
+    torch.mps.empty_cache()
 
     print("\n--- Part 2: Optimized ---")
     optimized_elapsed = generate_optimized(optimized_trace_name="v1_optimized_trace.json")
@@ -142,18 +130,17 @@ if __name__ == "__main__":
 #    newly generated tokens in each decode step instead of recomputing the full prefix.
 #
 # 2. Precision Upgrade (1.5x - 2x speedup): Switched the model dtype from `float32`
-#    to `bfloat16`. This halves memory bandwidth requirements and leverages native
-#    Tensor Core matrix multiplication capabilities of modern GPUs like the L40S.
+#    to `float16`. This halves memory bandwidth requirements and leverages native
+#    half-precision acceleration of Apple Silicon GPU.
 #
 # 3. Synchronization Elimination (1.1x - 1.3x speedup): Removed the per-step
 #    host-device synchronization (caused by calling `.item()` inside the generation loop).
 #    By accumulating token tensors on the GPU and doing a single `.tolist()` conversion
 #    at the end, we prevent costly CPU-GPU roundtrips and avoid GPU execution bubbles.
 #
-# 4. Kernel Fusion via torch.compile (1.2x - 1.5x speedup): Wrapped the model with
-#    `torch.compile(model, dynamic=True)` to trace the execution graph and generate
-#    fused GPU kernels. The profiling phase beautifully serves as the warmup stage
-#    for the compiler, so timing is not penalized by compilation overhead.
+# 4. Kernel Fusion / Graph compilation (optional/fallback): Attempted compiling the model's
+#    forward path using JIT compiler `torch.compile(model, dynamic=True)` to fuse kernels
+#    where supported by PyTorch's MPS backend, falling back gracefully to eager mode if unsupported.
 #
 # Biggest impact and why:
 #

@@ -43,7 +43,16 @@ def make_compute_fn(num_ops: int, compiled: bool = True):
         return acc
 
     # TODO (1 line): return either `fn` or `torch.compile(fn)` based on `compiled`
-    return torch.compile(fn) if compiled else fn
+    if compiled:
+        try:
+            return torch.compile(fn)
+        except RuntimeError as e:
+            if "not supported on Python" in str(e) or "not supported" in str(e):
+                import warnings
+                warnings.warn(f"torch.compile is not supported on this Python/PyTorch version. Falling back to eager: {e}")
+                return fn
+            raise e
+    return fn
 
 
 # ============================================================================
@@ -56,27 +65,28 @@ def make_compute_fn(num_ops: int, compiled: bool = True):
 
 
 def benchmark_fn(fn, *args, warmup=25, rep=100) -> float:
-    """Benchmark a GPU function using CUDA events.
+    """Benchmark a GPU function using MPS synchronization.
 
     Returns median execution time in milliseconds.
     """
+    if not torch.backends.mps.is_available():
+        raise RuntimeError("MPS is not available. This script is strictly MPS-only.")
+
     # Warmup (triggers torch.compile on first call, then warms caches)
     for _ in range(warmup):
         fn(*args)
-    torch.cuda.synchronize()
+    torch.mps.synchronize()
 
-    # TODO: time `rep` runs using CUDA events and return median latency (ms)
+    import time
     latencies = []
+    
     for _ in range(rep):
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        
-        start_event.record()
+        torch.mps.synchronize()
+        t0 = time.perf_counter()
         fn(*args)
-        end_event.record()
-        
-        end_event.synchronize()
-        latencies.append(start_event.elapsed_time(end_event))
+        torch.mps.synchronize()
+        t1 = time.perf_counter()
+        latencies.append((t1 - t0) * 1000.0)
             
     latencies.sort()
     mid = len(latencies) // 2
@@ -127,8 +137,6 @@ def compute_elementwise_metrics(num_elements, num_ops, bytes_per_element, ms, va
 # ============================================================================
 # Part 3: Short Writeup
 # ============================================================================
-# Answer these after you generate `results/roofline.png` and inspect the points.
-#
 # Q1. Look at the compiled element-wise operations from `1 ops` through `64 ops`.
 # Why does performance rise as arithmetic intensity increases even though the
 # measured runtime changes only a little?
@@ -150,15 +158,15 @@ def compute_elementwise_metrics(num_elements, num_ops, bytes_per_element, ms, va
 #
 # ANSWER 2:
 # 1. Problem Size and Occupancy Under-utilization: A matrix multiplication of size 
-# 1024x1024 on a massive GPU like an H100 SXM does not fully saturate the GPU's compute 
-# capacity. The grid size is relatively small, so the GPU is latency-bound or wave-quantization-
-# limited and cannot achieve peak Tensor Core throughput. In contrast, the element-wise 
-# operation runs on a very large tensor (N = 64M elements), which fully occupies all SMs with 
-# high occupancy, reaching near-peak memory-bandwidth-bound or vector-compute efficiency.
-# 2. Vector ALU vs. Tensor Core Pipeline: If the matmul is executed using standard FP32 vector 
-# units rather than Tensor Cores, it will achieve only a fraction of the GPU's peak tensor 
-# performance, whereas the 128 ops compiled element-wise kernel runs extremely efficiently 
-# on the GPU's vector ALU pipeline.
+# 1024x1024 on a massive GPU does not fully saturate the GPU's compute capacity. The 
+# grid size is relatively small, so the GPU is latency-bound or wave-quantization-
+# limited and cannot achieve peak Matrix Core throughput. In contrast, the element-wise 
+# operation runs on a very large tensor (N = 64M elements), which fully occupies all compute 
+# units with high occupancy, reaching near-peak memory-bandwidth-bound or vector-compute efficiency.
+# 2. Vector ALU vs. Matrix Core Pipeline: If the matmul is executed using standard float32 vector 
+# units rather than dedicated hardware matrix cores, it will achieve only a fraction of the GPU's peak 
+# matrix performance, whereas the 128 ops compiled element-wise kernel runs extremely efficiently 
+# on the GPU's vector execution pipelines.
 #
 # Q3. Between `64 ops` and `128 ops`, runtime increases more noticeably than it
 # did for smaller operations. What does that suggest about what resource is
@@ -179,7 +187,7 @@ def compute_elementwise_metrics(num_elements, num_ops, bytes_per_element, ms, va
 # ANSWER 4:
 # In eager mode, PyTorch does not perform kernel fusion. Each loop iteration launches 
 # separate GPU kernels for the multiplication (`acc * x`) and the addition (`temp + x`). 
-# Consequently, intermediate tensors are materialized and written to global GPU memory (HBM/GDDR), 
+# Consequently, intermediate tensors are materialized and written to global GPU memory, 
 # only to be read back by the next kernel. This creates massive memory traffic that scales 
 # linearly with `num_ops` (estimated at 6 * N * 4 bytes of traffic per iteration). Because 
 # memory traffic increases at the same rate as the number of FLOPs, eager arithmetic intensity 
