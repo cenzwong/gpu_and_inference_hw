@@ -1,2 +1,64 @@
-git config --global user.name "Cenz Wong"
-git config --global user.email "cenzth@gmail.com"
+(.venv) cenzwong@computeinstance-e00fzgcfmsbf9dqqrs:~/gpu_and_inference_hw$    python3 hw2/hw2_task.py
+============================================================
+HW2: LLM Inference Optimization
+Model: Tiny random Llama (2 layers, d_model=2048)
+============================================================
+
+--- Part 1: Slow baseline ---
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                           aten::matmul         0.59%       1.712ms        29.43%      85.405ms     444.818us       0.000us         0.00%     108.593ms     565.588us           192  
+                                           aten::linear         0.25%     715.729us         8.47%      24.591ms     136.619us       0.000us         0.00%     108.563ms     603.127us           180  
+                                               aten::mm         2.17%       6.299ms         6.52%      18.915ms     105.081us     107.738ms        86.74%     108.563ms     603.127us           180  
+                                 ampere_sgemm_128x64_tn         0.00%       0.000us         0.00%       0.000us       0.000us     107.561ms        86.60%     107.561ms     597.561us           180  
+                     aten::scaled_dot_product_attention         0.11%     306.768us         1.10%       3.196ms     133.177us       0.000us         0.00%       9.051ms     377.121us            24  
+          aten::_scaled_dot_product_efficient_attention         0.15%     443.489us         1.00%       2.889ms     120.395us       0.000us         0.00%       9.051ms     377.121us            24  
+                     aten::_efficient_attention_forward         0.16%     451.096us         0.70%       2.025ms      84.376us       8.329ms         6.71%       9.051ms     377.121us            24  
+fmha_cutlassF_f32_aligned_32x128_gmem_sm80(PyTorchMe...         0.00%       0.000us         0.00%       0.000us       0.000us       8.329ms         6.71%       8.329ms     347.049us            24  
+                                              aten::mul         1.24%       3.591ms         5.19%      15.062ms      57.053us       3.157ms         2.54%       3.215ms      12.178us           264  
+void at::native::elementwise_kernel<128, 2, at::nati...         0.00%       0.000us         0.00%       0.000us       0.000us       1.989ms         1.60%       1.989ms       9.208us           216  
+                                              aten::cat         0.64%       1.861ms         2.90%       8.422ms      70.181us       1.553ms         1.25%       1.577ms      13.141us           120  
+                                              aten::add         0.74%       2.153ms         4.44%      12.886ms      82.606us       1.478ms         1.19%       1.511ms       9.687us           156  
+void at::native::(anonymous namespace)::CatArrayBatc...         0.00%       0.000us         0.00%       0.000us       0.000us       1.472ms         1.18%       1.472ms      15.328us            96  
+                       Runtime Triggered Module Loading        34.00%      98.651ms        34.00%      98.651ms       2.740ms       1.160ms         0.93%       1.160ms      32.210us            36  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us       1.126ms         0.91%       1.126ms      46.898us            24  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 290.184ms
+Self CUDA time total: 124.210ms
+
+Slow: 128 tokens in 1.64s (78.0 tok/s)
+Token preview: [775, 1973, 97, 2453, 295, 695, 775, 866]
+
+--- Part 2: Optimized ---
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+                                                   Name    Self CPU %      Self CPU   CPU total %     CPU total  CPU time avg     Self CUDA   Self CUDA %    CUDA total  CUDA time avg    # of Calls  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+           _recursive_joint_graph_passes (dynamo_timed)         0.00%       0.000us         0.00%       0.000us       0.000us     714.157ms       110.50%     714.157ms     238.052ms             3  
+                                       CompiledFunction         0.02%      16.740ms         1.22%     853.263ms      71.105ms       0.000us         0.00%     663.037ms      55.253ms            12  
+       InductorBenchmarker.benchmark_gpu (dynamo_timed)         0.00%       0.000us         0.00%       0.000us       0.000us     655.044ms       101.35%     655.044ms      29.775ms            22  
+CachingAutotuner.benchmark_all_configs (dynamo_timed...         0.01%       3.737ms         0.97%     679.705ms      61.791ms       0.000us         0.00%     639.146ms      58.104ms            11  
+       InductorBenchmarker.benchmark_gpu (dynamo_timed)         0.36%     250.201ms         0.97%     675.968ms      30.726ms       0.000us         0.00%     639.146ms      29.052ms            22  
+                                            aten::fill_         0.05%      35.728ms         0.13%      88.708ms      19.263us     610.914ms        94.53%     611.123ms     132.708us          4605  
+                                            aten::zero_         0.08%      53.576ms         0.14%      96.601ms      17.437us       0.000us         0.00%     611.074ms     110.302us          5540  
+void at::native::vectorized_elementwise_kernel<4, at...         0.00%       0.000us         0.00%       0.000us       0.000us     610.869ms        94.52%     610.869ms     134.790us          4532  
+## Call CompiledFxGraph fi5lbrpo6hfaqx5l6ulszompxgcd...         0.00%       0.000us         0.00%       0.000us       0.000us     370.281ms        57.29%     370.281ms     370.281ms             1  
+## Call CompiledFxGraph fvq65vife3agxobc5dd7dk5t4ah5...         0.00%       0.000us         0.00%       0.000us       0.000us     315.462ms        48.81%     315.462ms     315.462ms             1  
+                             Torch-Compiled Region: 0/1         0.00%       1.047ms         0.46%     322.009ms     322.009ms       0.000us         0.00%     284.555ms     284.555ms             1  
+## Call CompiledFxGraph fvq65vife3agxobc5dd7dk5t4ah5...         0.01%       4.962ms         0.45%     315.903ms     315.903ms       0.000us         0.00%     284.555ms     284.555ms             1  
+                             Torch-Compiled Region: 0/0         0.01%       3.643ms         0.54%     380.077ms     380.077ms       0.000us         0.00%     258.942ms     258.942ms             1  
+## Call CompiledFxGraph fi5lbrpo6hfaqx5l6ulszompxgcd...         0.01%       4.941ms         0.53%     370.773ms     370.773ms       0.000us         0.00%     258.942ms     258.942ms             1  
+## Call CompiledFxGraph fiyhjubjvpj5psnowksk2sotyfjc...         0.00%       0.000us         0.00%       0.000us       0.000us     146.737ms        22.70%     146.737ms      14.674ms            10  
+-------------------------------------------------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  ------------  
+Self CPU time total: 69.945s
+Self CUDA time total: 646.296ms
+
+Optimized: 128 tokens in 0.29s (447.0 tok/s)
+Token preview: [775, 1973, 97, 2453, 295, 695, 775, 866]
+
+============================================================
+SUMMARY
+============================================================
+  Slow:        1.64s
+  Optimized:   0.29s
+  Speedup:     5.73x  (vs V0 slow baseline)
