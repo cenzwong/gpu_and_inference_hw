@@ -134,33 +134,43 @@ if __name__ == "__main__":
 # Writeup
 # ============================================================================
 #
+# Execution Summary (NVIDIA L40S 48GB GDDR6):
+#   - Slow Baseline:  128 tokens in 1.64s (78.0 tok/s)
+#   - Optimized Loop: 128 tokens in 0.29s (447.0 tok/s)
+#   - Achieved Speedup: 5.73x
+#
 # Changes made and speedup per fix:
 #
-# 1. KV Caching (10x - 30x speedup): Introduced the Hugging Face `past_key_values`
-#    mechanism to cache the keys and values of processed tokens. This reduces attention
-#    complexity from O(N^2) down to O(N) by only calculating keys and values for
-#    newly generated tokens in each decode step instead of recomputing the full prefix.
+# 1. KV Caching (Single Largest Structural Win): Introduced the `past_key_values` caching
+#    mechanism to store the calculated key and value states of previous tokens. This reduces
+#    attention's algorithmic complexity from O(N^2) (recomputing the entire prompt and generated
+#    tokens at every step) to O(N) (only computing K and V for the single new token). During a 128-token
+#    generation from a 1024-token prompt, the total attention tokens processed drop from 139,200
+#    down to 1,151 (a ~120x reduction in attention workload).
 #
-# 2. Precision Upgrade (1.5x - 2x speedup): Switched the model dtype from `float32`
-#    to `bfloat16`. This halves memory bandwidth requirements and leverages native
-#    Tensor Core matrix multiplication capabilities of modern GPUs like the L40S.
+# 2. Precision Upgrade (bfloat16): Converted the model dtype from FP32 to BF16 via `build_model(torch.bfloat16)`.
+#    This halves memory bandwidth traffic across the entire model and unleashes the native bfloat16 Tensor Cores of the L40S,
+#    providing a massive boost to matrix multiplications.
 #
-# 3. Synchronization Elimination (1.1x - 1.3x speedup): Removed the per-step
-#    host-device synchronization (caused by calling `.item()` inside the generation loop).
-#    By accumulating token tensors on the GPU and doing a single `.tolist()` conversion
-#    at the end, we prevent costly CPU-GPU roundtrips and avoid GPU execution bubbles.
+# 3. Host-Device Synchronization Elimination: Eliminated expensive CPU-GPU round-trips by removing
+#    per-step `.item()` or `.cpu()` calls in the generation loop. In `optimized_loop`, token tensors
+#    remain purely on the GPU inside `generated_tokens`, and only a single `.tolist()` conversion
+#    is executed at the very end. This keeps the GPU stream fully saturated without driver synchronization bubbles.
 #
-# 4. Kernel Fusion via torch.compile (1.2x - 1.5x speedup): Wrapped the model with
-#    `torch.compile(model, dynamic=True)` to trace the execution graph and generate
-#    fused GPU kernels. The profiling phase beautifully serves as the warmup stage
-#    for the compiler, so timing is not penalized by compilation overhead.
+# 4. JIT Kernel Fusion via torch.compile: Wrapped the model with `torch.compile(model, dynamic=True)` to
+#    trace and optimize the computation graph. The compiler fuses multiple consecutive pointwise operations and linear layers into
+#    a small set of highly optimized Triton kernels, reducing memory round-trips and launch overhead. We leveraged
+#    the profile run as a natural warm-up to ensure compilation overhead was not included in the timed run.
 #
 # Biggest impact and why:
 #
-# KV Caching had the single largest impact. The baseline slow loop recomputes attention
-# representations for the entire growing sequence (starting at 1024 and expanding to 1152)
-# at every single step. For 128 generated tokens, this processes ~139,200 attention tokens.
-# With KV Caching, we only perform full attention once (during the 1024-token prefill)
-# and then process exactly 1 token per subsequent step, totalling just 1,151 attention tokens.
-# This represents a massive >120x reduction in attention-level arithmetic operations
-# and memory bandwidth, which scales the bottlenecks down drastically.
+# KV Caching had the single largest impact on execution speed and memory efficiency. The slow baseline
+# has to perform a full forward pass over a sequence of length up to 1152 at the 128th generation step.
+# Without KV caching, the GPU is forced to recompute all keys and values for all preceding tokens, wasting
+# massive amounts of memory bandwidth and FLOPs.
+#
+# By caching these states, the model only does a full sequence prefill (length 1024) at step 0, and then
+# performs single-token decode operations (sequence length 1) for the remaining steps. This dramatically
+# lowers the arithmetic and memory bandwidth footprint of attention, allowing other optimizations (like BF16 Tensor Cores
+# and torch.compile fusion) to further accelerate the remaining operations, taking generation performance
+# from a bottlenecked 78.0 tok/s to an incredible 447.0 tok/s.

@@ -133,61 +133,82 @@ def compute_elementwise_metrics(num_elements, num_ops, bytes_per_element, ms, va
 # Why does performance rise as arithmetic intensity increases even though the
 # measured runtime changes only a little?
 #
-# ANSWER 1: 
-# In the memory-bound regime (to the left of the ridge point), the execution time is 
-# dominated by memory traffic rather than computation. Since the compiled operations 
-# are fused, the memory traffic is constant (reading the input tensor once and writing 
-# the output tensor once, totaling 2 * N * 4 bytes for float32) regardless of the 
-# number of operations in the loop. The additional operations are executed entirely on 
-# registers, which has a negligible impact on latency since memory bandwidth is the 
-# bottleneck. Because the total FLOPs increase linearly with `num_ops` while the 
-# measured runtime remains almost flat, the achieved performance (FLOP/s = FLOPs / time) 
-# rises linearly with the arithmetic intensity.
+# ANSWER 1:
+# In the memory-bound regime (to the left of the ridge point), execution time is dominated
+# by memory traffic rather than computation. Because the compiled operations are fused,
+# the global memory traffic is constant: the input tensor is read once and the output tensor
+# is written once, totaling 2 * N * 4 bytes (512 MB for float32 with N = 64M elements)
+# regardless of `num_ops`. The loop's arithmetic operations execute entirely on registers,
+# which has a negligible impact on latency since memory bandwidth is the bottleneck.
+#
+# Based on the L40S measurements:
+#   - 1 ops (compiled): 0.844 ms, 0.16 TFLOP/s, AI = 0.25 FLOP/B
+#   - 64 ops (compiled): 0.870 ms, 9.88 TFLOP/s, AI = 16.0 FLOP/B
+# Although arithmetic intensity and FLOP count increased 64-fold, the runtime grew by less
+# than 3% (0.844 ms to 0.870 ms). Since achieved performance is defined as FLOPs / time,
+# and FLOPs scale linearly with `num_ops` while the runtime remains virtually flat,
+# the achieved performance rises linearly with arithmetic intensity.
 #
 # Q2. In one sample run, `matmul 1024x1024` achieved lower FLOP/s than the
 # `128 ops` compiled element-wise operation. Give one or two reasons why that can
 # happen on a large GPU like an H100.
 #
 # ANSWER 2:
-# 1. Problem Size and Occupancy Under-utilization: A matrix multiplication of size 
-# 1024x1024 on a massive GPU like an H100 SXM does not fully saturate the GPU's compute 
-# capacity. The grid size is relatively small, so the GPU is latency-bound or wave-quantization-
-# limited and cannot achieve peak Tensor Core throughput. In contrast, the element-wise 
-# operation runs on a very large tensor (N = 64M elements), which fully occupies all SMs with 
-# high occupancy, reaching near-peak memory-bandwidth-bound or vector-compute efficiency.
-# 2. Vector ALU vs. Tensor Core Pipeline: If the matmul is executed using standard FP32 vector 
-# units rather than Tensor Cores, it will achieve only a fraction of the GPU's peak tensor 
-# performance, whereas the 128 ops compiled element-wise kernel runs extremely efficiently 
-# on the GPU's vector ALU pipeline.
+# 1. SM Under-utilization and Wave Quantization: A matrix multiplication of size 1024x1024
+#    is extremely small for massive modern GPUs like the H100 (132 SMs) or L40S (142 SMs).
+#    It does not generate enough thread blocks to fully saturate and occupy the massive number
+#    of SMs. This leads to severe under-utilization, where the GPU is latency-bound rather than
+#    compute-throughput-bound. In contrast, the 128 ops compiled element-wise kernel runs on a
+#    very large 1D tensor (64M elements), which guarantees maximum SM occupancy.
+# 2. Kernel Launch and Host Overhead: For a small matrix (1024x1024), the execution time is
+#    extremely short (~0.090 ms on L40S). At this scale, driver and kernel launch overheads
+#    represent a significant portion of the total execution time, dragging down the achieved
+#    FLOP/s. For the 128 ops compiled element-wise kernel, the runtime is 0.877 ms, allowing
+#    the GPU to reach steady-state throughput and fully amortize launch overheads.
+# 3. Vector ALU vs. Tensor Cores: Standard FP32 `torch.mm` utilizes standard FP32 vector ALUs
+#    rather than Tensor Cores. Without Tensor Cores, the peak FP32 vector rate is a small fraction
+#    of the GPU's peak tensor throughput, allowing a highly optimized Triton-compiled element-wise
+#    vector ALU kernel to achieve comparable or higher TFLOP/s than a small non-tensor matmul.
 #
 # Q3. Between `64 ops` and `128 ops`, runtime increases more noticeably than it
 # did for smaller operations. What does that suggest about what resource is
 # becoming the bottleneck?
 #
 # ANSWER 3:
-# This transition suggests that the kernel is crossing the ridge point and transitioning 
-# from being memory-bound to compute-bound (specifically ALU instruction throughput-bound). 
-# For operations up to 64 ops, execution time was dominated by memory latency and bandwidth, 
-# making the compute time "hidden" (pipelined behind memory transfers). At 128 ops, the 
-# instruction execution time of the ALU inside the loop exceeds the memory transfer time. 
-# As a result, memory transfer is no longer the bottleneck, and adding more compute 
-# operations directly increases the runtime, showing that compute ALU capacity has become 
-# the primary bottleneck.
+# In general, a sudden, noticeable increase in runtime when scaling arithmetic intensity
+# suggests that the kernel is crossing the "ridge point" of the roofline and transitioning
+# from a memory-bandwidth-bound bottleneck to a compute-bound (ALU instruction throughput) bottleneck.
+#
+# Under this transition, the time required to execute the loop's arithmetic instructions
+# on the ALU exceeds the memory transfer time. Thus, memory transfer is no longer the bottleneck,
+# and adding more operations directly increases the runtime linearly.
+#
+# Hardware-specific observation on L40S vs. H100:
+#   - On the H100, the ridge point is ~20 FLOP/Byte. Thus, 64 ops (AI = 16 FLOP/B) is near the ridge,
+#     and 128 ops (AI = 32 FLOP/B) is fully compute-bound, resulting in a noticeable runtime jump.
+#   - On the L40S, peak FP32 compute is 92 TFLOP/s and memory bandwidth is 0.86 TB/s, giving a
+#     huge ridge point of 106.0 FLOP/Byte. This explains why the L40S runtime remained nearly
+#     identical (0.870 ms for 64 ops vs. 0.877 ms for 128 ops) — the L40S is still strongly
+#     memory-bound at 128 ops (AI = 32 FLOP/B), and the compute remains completely hidden.
 #
 # Q4. Why do the eager `ops-K` points look so different from the compiled ones?
 #
 # ANSWER 4:
-# In eager mode, PyTorch does not perform kernel fusion. Each loop iteration launches 
-# separate GPU kernels for the multiplication (`acc * x`) and the addition (`temp + x`). 
-# Consequently, intermediate tensors are materialized and written to global GPU memory (HBM/GDDR), 
-# only to be read back by the next kernel. This creates massive memory traffic that scales 
-# linearly with `num_ops` (estimated at 6 * N * 4 bytes of traffic per iteration). Because 
-# memory traffic increases at the same rate as the number of FLOPs, eager arithmetic intensity 
-# remains constant and very low (around 0.083 FLOP/Byte), keeping eager points clustered 
-# vertically on the far-left (memory-bound) side of the roofline plot.
-#
-# In contrast, `torch.compile` captures the entire loop and fuses the operations into 
-# a single GPU kernel, keeping intermediate accumulator variables in fast registers. Memory 
-# traffic remains constant (just reading the input once and writing the output once) while 
-# FLOPs increase, allowing the arithmetic intensity of compiled points to scale linearly 
-# with `num_ops` and move rightward across the roofline towards the compute ceiling.
+# 1. Lack of Kernel Fusion: In eager mode, PyTorch evaluates every operation separately.
+#    Each loop iteration `acc = acc * x + x` launches distinct CUDA kernels for the multiplication
+#    and the addition. This forces intermediate tensors to be materialized and written back to
+#    global GPU memory (HBM/GDDR), only to be read back immediately by the next kernel.
+# 2. Arithmetic Intensity Bottleneck: Because eager mode transfers 6 tensors (4 reads and 2 writes)
+#    per element per loop iteration, the memory traffic scales linearly with `num_ops` at a rate
+#    of `6 * N * 4 * num_ops` bytes, while doing `2 * N * num_ops` FLOPs. This locks the eager arithmetic
+#    intensity at a constant, extremely low value:
+#      AI = (2 * N * num_ops) / (24 * N * num_ops) = 0.0833 FLOP/Byte.
+#    Since both FLOPs and memory traffic grow at the same rate, the points remain clustered vertically
+#    on the far-left memory-bound side of the plot.
+# 3. Compiler Fusing: `torch.compile` captures the entire loop and uses Triton to generate a single,
+#    fused GPU kernel. All intermediate accumulator updates are kept inside the GPU's fast registers,
+#    so memory traffic is constant at `2 * N * 4` bytes (1 read and 1 write) while FLOPs grow linearly.
+#    This allows the compiled arithmetic intensity to scale linearly with `num_ops` (AI = num_ops / 4),
+#    moving the compiled points rightward across the roofline towards the peak compute ceiling.
+#    Furthermore, eager mode suffers from severe kernel launch overhead due to launching 2 * num_ops
+#    individual kernels, which scales runtime linearly and keeps performance extremely low (~0.05 TFLOP/s).
