@@ -1,7 +1,5 @@
 # Homework
 
-> This mirror the main homework but use Apple Metal.
-
 ## Contents
 
 - `hw1/` (40 pts): implement and benchmark operations with different arithmetic intensity. **Requires a GPU** (H100 or L40S).
